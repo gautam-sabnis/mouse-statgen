@@ -164,8 +164,11 @@ valid_strains <- unique(c(strains$p1, strains$p2))
 
 # ── Load and recode genotypes ─────────────────────────────────────────────────
 message("Loading genotypes from: ", args$genotypes)
-geno <- fread(args$genotypes)
+all_geno_cols <- names(fread(args$genotypes, nrows = 0L))
+sel_cols      <- unique(c("chr", "bp38", "rs", "observed", intersect(all_geno_cols, valid_strains)))
+geno <- fread(args$genotypes, select = sel_cols)
 geno[, c("major", "minor") := tstrsplit(observed, "/", fixed = TRUE, keep = 1:2)]
+geno[, observed := NULL]
 geno <- geno[rs != ""]
 
 keep_cols   <- c(intersect(names(geno), valid_strains), "chr", "bp38", "rs", "major", "minor")
@@ -188,7 +191,7 @@ phenos   <- data.table()
 for (p in pheno_names) phenos[, (p) := numeric()]
 covars   <- data.table()
 for (cv in covar_names) covars[, (cv) := numeric()]
-covars[, isWild := numeric()]
+#covars[, isWild := numeric()]
 sexvec   <- c()
 notfound <- c()
 
@@ -221,10 +224,11 @@ for (comrow in seq_len(nrow(complete_table))) {
             complete.geno[[p1n]][complete.geno$chr == "X"]]
 
     prow <- complete_table[comrow, c("Strain", "MouseID", pheno_names)]
-    crow <- cbind(
-        complete_table[comrow, covar_names, drop = FALSE],
-        tibble(isWild = as.numeric(p1n %in% yamin$wild | p2n %in% yamin$wild))
-    )
+    #crow <- cbind(
+    #    complete_table[comrow, covar_names, drop = FALSE],
+    #    tibble(isWild = as.numeric(p1n %in% yamin$wild | p2n %in% yamin$wild))
+    #)
+    crow <- complete_table[comrow, covar_names, drop = FALSE]
 
     if (length(covar_names) == 0 || all(!is.na(crow))) {
         phenos <- rbind(phenos, prow, fill = TRUE)
@@ -279,8 +283,7 @@ if (args$qqnorm)
 
 # ── SNP filters: MAF, missingness, heterozygous calls ─────────────────────────
 n_ind <- ncol(complete.geno) - 5L
-mafc  <- rowSums(complete.geno[, !c("chr", "bp38", "rs", "major", "minor")],
-                 na.rm = TRUE) / (2 * n_ind)
+mafc  <- rowSums(complete.geno[, !c("chr", "bp38", "rs", "major", "minor")]) / (2 * n_ind)
 
 b$genotypes <- b$genotypes[
     rowSums(is.na(b$genotypes)) <= (ncol(b$genotypes) - 3L) * args$missing &
@@ -305,10 +308,11 @@ fwrite(annotations,
     file.path(args$outdir, "annotations.csv"),
     col.names = TRUE, sep = ",")
 
-pheno_mat <- b$phenotypes[, !colnames(b$phenotypes) %in% c("Strain", "MouseID"), drop = FALSE]
+keep_cols <- setdiff(colnames(b$phenotypes), c("Strain", "MouseID"))
+pheno_mat <- b$phenotypes[, ..keep_cols]
 fwrite(as.data.table(pheno_mat),
     file.path(args$outdir, paste0("pheno_", name, ".txt")),
-    col.names = FALSE, sep = "\t")
+    col.names = FALSE, sep = "\t", na = "NA")
 
 if (!is.null(b$covars))
     fwrite(as.data.table(b$covars),
@@ -328,12 +332,42 @@ write.table(sorder[b$indices],
     file.path(args$outdir, "export_strains_order.csv"),
     quote = FALSE, col.names = FALSE)
 
+# ── Write trait-to-group mapping ──────────────────────────────────────────────
+# Used by CLUMP_COMBINED to compute per-group min p-values via awk, without
+# a separate R script.  Two columns: trait_name (pipeline ID) and group (YAML).
+tg <- data.frame(
+    trait_name = pheno_names,
+    group      = vapply(pheno_names, function(n) {
+        g <- yamin$phenotypes[[n]]$group
+        if (is.null(g)) "NoGroup" else g
+    }, character(1)),
+    stringsAsFactors = FALSE
+)
+write.table(tg,
+    file.path(args$outdir, paste0("trait_groups_", name, ".tsv")),
+    sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
 # ── Write PLINK BED/BIM/FAM ───────────────────────────────────────────────────
 message("Writing PLINK files...")
 
 plink_pheno     <- as.data.frame(b$phenotypes)
 plink_pheno$FID <- as.integer(as.factor(plink_pheno$Strain))
 plink_pheno$IID <- seq_len(nrow(plink_pheno))
+
+# PLINK-format pheno and covar files (FID, IID, values) for LDAK and GCTA
+fwrite(cbind(plink_pheno[, c("FID", "IID")], pheno_mat),
+    file.path(args$outdir, paste0("pheno_plink_", name, ".txt")),
+    col.names = FALSE, sep = "\t", na = "-9")
+
+if (!is.null(b$covars)) {
+    covar_plink <- cbind(
+        plink_pheno[, c("FID", "IID")],
+        as.data.frame(b$covars)[, -1, drop = FALSE]  # drop intercept column
+    )
+    fwrite(covar_plink,
+        file.path(args$outdir, paste0("covars_plink_", name, ".txt")),
+        col.names = FALSE, sep = "\t", na = "-9")
+}
 
 m <- nrow(b$genotypes)
 n <- ncol(b$genotypes) - 3L   # exclude rs, major, minor
@@ -343,7 +377,7 @@ rownames(X) <- b$genotypes$rs
 colnames(X) <- seq_len(n)
 
 bim      <- make_bim(n = m)
-bim$chr  <- annotations$chr
+bim$chr  <- ifelse(annotations$chr == "X", "23", annotations$chr)
 bim$id   <- annotations$rs
 bim$pos  <- annotations$bp38
 bim$ref  <- ifelse(is.na(b$genotypes$minor) | b$genotypes$minor == "", "0", b$genotypes$minor)
@@ -356,7 +390,7 @@ fam$sex    <- ifelse(complete_table$Sex[b$indices] == "M", 1L, 2L)
 fam$pheno  <- -9L
 
 # Drop sex chromosomes (avoids hemizygosity warnings in PLINK/GEMMA)
-autosomal  <- !bim$chr %in% c("X", "Y", "MT")
+autosomal  <- !bim$chr %in% c("Y", "MT")
 bim        <- bim[autosomal, ]
 X          <- X[autosomal, ]
 
@@ -367,4 +401,4 @@ X          <- X[sort_idx, ]
 
 write_plink(file.path(args$outdir, name), X, bim, fam)
 
-message("Done. Outputs written to: ", normpath(args$outdir))
+message("Done. Outputs written to: ", normalizePath(args$outdir))

@@ -1,3 +1,10 @@
 .DS_Store
 .claude/
 data/
+results/
+output/
+src/manhattan.R
+src/manhattan_gg.R
+src/manhattan_local.R
+src/postprocess_mv.R
+src/postprocess_pg.R
