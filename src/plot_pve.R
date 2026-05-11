@@ -48,7 +48,7 @@ if (LOCAL) {
         yaml     = "data/anxfb.yaml",
         outdir   = "output/plots",
         minherit = 0,
-        palette  = "nejm"
+        palette  = "uchicago"
     )
 } else {
     parser <- ArgumentParser()
@@ -65,9 +65,9 @@ if (LOCAL) {
         help = "Output directory (default: current dir)")
     parser$add_argument("--minherit", type = "double", default = 0,
         help = "h2 threshold: bars below this are shown at reduced opacity (default: 0)")
-    parser$add_argument("--palette", default = "nejm",
-        choices = c("nejm", "npg", "bmj", "jco", "lancet", "jama"),
-        help = "ggsci color palette for phenotype groups (default: nejm)")
+    parser$add_argument("--palette", default = "uchicago",
+        choices = c("uchicago", "nejm", "npg", "bmj", "jco", "lancet", "jama"),
+        help = "ggsci color palette for phenotype groups (default: uchicago)")
     args <- parser$parse_args()
 }
 

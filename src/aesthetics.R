@@ -32,38 +32,39 @@ FIG_FONT <- tryCatch({ grDevices::pdfFonts("Arial"); "Arial" },
 
 # ── Color palettes ─────────────────────────────────────────────────────────────
 # All categorical palettes come from ggsci. The palette argument accepts any of:
-#   "npg", "nejm", "bmj", "jco", "lancet", "jama", "d3"
+#   "npg", "nejm", "uchicago", "bmj", "jco", "lancet", "jama", "d3"
 # Viridis is kept for continuous/sequential scales (heatmaps etc.).
 
 # Cluster colors: discrete, length determined at call time by k.
 # Default IGV — 51 colors from the Integrative Genomics Viewer palette,
 # designed for genomics and maximally distinct even at high k.
 # D3 (10 colors) is a good alternative for k <= 10.
-cluster_colors <- function(k, palette = c("igv", "d3", "npg", "jco", "nejm", "lancet")) {
+cluster_colors <- function(k, palette = c("igv", "d3", "npg", "jco", "uchicago", "lancet")) {
     palette <- match.arg(palette)
     pal_fn  <- switch(palette,
-        igv    = ggsci::pal_igv(),
-        d3     = ggsci::pal_d3(),
-        npg    = ggsci::pal_npg(),
-        jco    = ggsci::pal_jco(),
-        nejm   = ggsci::pal_nejm(),
-        lancet = ggsci::pal_lancet()
+        igv      = ggsci::pal_igv(),
+        d3       = ggsci::pal_d3(),
+        npg      = ggsci::pal_npg(),
+        jco      = ggsci::pal_jco(),
+        uchicago = ggsci::pal_uchicago(),
+        lancet   = ggsci::pal_lancet()
     )
     pal_fn(k)
 }
 
 # Group colors: named vector, one color per group label.
-# Default NEJM (8 colors); swap palette as needed.
+# Default UChicago (9 colors); swap palette as needed.
 group_colors <- function(groups,
-                         palette = c("nejm", "npg", "bmj", "jco", "lancet", "jama")) {
+                         palette = c("uchicago", "npg", "nejm", "bmj", "jco", "lancet", "jama")) {
     palette <- match.arg(palette)
     pal_fn  <- switch(palette,
-        nejm   = ggsci::pal_nejm(),
-        npg    = ggsci::pal_npg(),
-        bmj    = ggsci::pal_bmj(),
-        jco    = ggsci::pal_jco(),
-        lancet = ggsci::pal_lancet(),
-        jama   = ggsci::pal_jama()
+        uchicago = ggsci::pal_uchicago(),
+        npg      = ggsci::pal_npg(),
+        nejm     = ggsci::pal_nejm(),
+        bmj      = ggsci::pal_bmj(),
+        jco      = ggsci::pal_jco(),
+        lancet   = ggsci::pal_lancet(),
+        jama     = ggsci::pal_jama()
     )
     stats::setNames(pal_fn(length(groups)), groups)
 }
@@ -81,8 +82,8 @@ SIG_LINE_COLOR <- "#FCBBA1"
 SIG_STRICT_COLOR  <- "#CC2200"   # above the stricter threshold
 SIG_LENIENT_COLOR <- "#E69F00"   # above the lenient threshold only
 
-# MAF histogram: [1] all SNPs, [2] peak SNPs — first two NEJM colors
-MAF_COLORS <- ggsci::pal_nejm()(2)
+# MAF histogram: [1] all SNPs, [2] peak SNPs — first two UChicago colors
+MAF_COLORS <- ggsci::pal_uchicago()(2)
 
 # LD decay smoothed line — third JCO color
 LD_COLOR <- ggsci::pal_jco()(3)[3]
@@ -93,8 +94,10 @@ LD_COLOR <- ggsci::pal_jco()(3)[3]
 
 SCALE_COLOR_NPG    <- ggsci::scale_color_npg()
 SCALE_FILL_NPG     <- ggsci::scale_fill_npg()
-SCALE_COLOR_NEJM   <- ggsci::scale_color_nejm()
-SCALE_FILL_NEJM    <- ggsci::scale_fill_nejm()
+SCALE_COLOR_NEJM     <- ggsci::scale_color_nejm()
+SCALE_FILL_NEJM      <- ggsci::scale_fill_nejm()
+SCALE_COLOR_UCHICAGO <- ggsci::scale_color_uchicago()
+SCALE_FILL_UCHICAGO  <- ggsci::scale_fill_uchicago()
 SCALE_COLOR_BMJ    <- ggsci::scale_color_bmj()
 SCALE_FILL_BMJ     <- ggsci::scale_fill_bmj()
 SCALE_COLOR_JCO    <- ggsci::scale_color_jco()

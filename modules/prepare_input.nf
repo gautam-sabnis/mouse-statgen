@@ -9,7 +9,7 @@ process PREPARE_INPUT {
     input:
     path  csv
     path  yaml
-    path  genotypes
+    path  genofiles
     val   name
 
     output:
@@ -25,16 +25,18 @@ process PREPARE_INPUT {
     path "trait_groups_${name}.tsv",   emit: trait_groups
 
     script:
+    def mda_flag = params.mda ? '--MDA' : ''
     """
     Rscript ${projectDir}/src/prepare_and_make_plink.R \\
         --input      ${csv}        \\
         --yaml       ${yaml}       \\
-        --genotypes  ${genotypes}  \\
+        --genotypes  ${genofiles}  \\
         --name       ${name}       \\
         --outdir     .             \\
         --downsample ${params.downsample} \\
         --MAF        ${params.maf}        \\
         --missing    ${params.missing}    \\
-        ${params.qqnorm ? '--qqnorm' : ''}
+        ${params.qqnorm ? '--qqnorm' : ''} \\
+        ${mda_flag}
     """
 }

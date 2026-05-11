@@ -55,17 +55,20 @@ if (LOCAL) {
         outdir      = "output/plots/clusters",
         clusters    = 7L,
         pvalthr     = 5,        # -log10(p) threshold for significance line on Manhattans
-        palette     = "nejm",
+        palette     = "uchicago",
         clumped_dir = "output/clump_combined",  # Part A: per-group CLUMP counts + overlap
         clump_dir   = "output/clump",           # Part D: per-trait CLUMP counts
-        overlap_kb  = 1000                      # Part E2: proximity window for CLUMP overlap
+        overlap_kb  = 1000,                     # Part E2: proximity window for CLUMP overlap
+        pval_type   = "p_wald"                  # which p-value column for clustering
     )
 } else {
     parser <- ArgumentParser()
     parser$add_argument("--pvals", "-p", required = TRUE,
         help = "gwas_pvals_<name>.csv from COMBINE_GWAS")
-    parser$add_argument("--susie", "-s", required = TRUE, nargs = "+",
+    parser$add_argument("--susie", "-s", nargs = "+", default = NULL,
         help = "SuSiE locus files (trait*_locus_*.txt) from SUSIE_FINEMAP")
+    parser$add_argument("--no_susie", action = "store_true", default = FALSE,
+        help = "Skip SuSiE-based locus definition; use PLINK clump lead SNPs from --clump_dir instead")
     parser$add_argument("--name", "-n", required = TRUE,
         help = "Run name (params.name from Nextflow, e.g. anxfb_test)")
     parser$add_argument("--yaml", "-y", required = TRUE,
@@ -76,20 +79,34 @@ if (LOCAL) {
         help = "Number of k-means clusters (default: 7)")
     parser$add_argument("--pvalthr", type = "double", default = 5,
         help = "-log10(p) threshold for significance line on cluster Manhattans (default: 5)")
-    parser$add_argument("--palette", default = "nejm",
-        choices = c("nejm", "npg", "bmj", "jco", "lancet", "jama"),
-        help = "ggsci palette for group column side colors (default: nejm)")
+    parser$add_argument("--palette", default = "uchicago",
+        choices = c("uchicago", "nejm", "npg", "bmj", "jco", "lancet", "jama"),
+        help = "ggsci palette for group column side colors (default: uchicago)")
     parser$add_argument("--clumped_dir", default = NULL,
         help = "Directory with .clumped files from CLUMP_COMBINED (enables per-group QTL count bar chart)")
     parser$add_argument("--clump_dir", default = NULL,
         help = "Directory with trait<N>.clumped files from CLUMP (enables per-trait CLUMP QTL count bar chart)")
     parser$add_argument("--overlap_kb", type = "double", default = 1000,
         help = "Proximity window in kb for CLUMP-based QTL overlap between groups (default: 1000)")
+    parser$add_argument("--pval_type", default = "p_wald",
+        choices = c("p_lrt", "p_score", "p_wald"),
+        help = "Which p-value column to use for clustering and Manhattans (default: p_wald)")
     args <- parser$parse_args()
 }
 
 dir.create(args$outdir, recursive = TRUE, showWarnings = FALSE)
 set.seed(490)   # match original for reproducibility
+
+pval_prefix <- args$pval_type   # e.g. "p_wald", "p_lrt", or "p_score"
+
+# Read a PLINK .clumped file; returns 0-row data.table if absent/empty/no SNPs.
+# Defined early so it is available both for --no_susie locus loading and Part A/D/E2.
+read_clumped <- function(path) {
+    if (!file.exists(path) || file.info(path)$size == 0L) return(data.table())
+    dt <- fread(path, fill = TRUE)
+    if (nrow(dt) == 0L || !"SNP" %in% names(dt)) return(data.table())
+    dt[, .(SNP, CHR, BP, P)]
+}
 
 # ── Phenotype metadata ─────────────────────────────────────────────────────────
 cfg              <- load_phenotype_config(args$yaml)
@@ -101,25 +118,35 @@ grpcol           <- colors$grpcol
 
 # ── Load p-value matrix ────────────────────────────────────────────────────────
 pvals      <- fread(args$pvals, sep = " ")
-p_lrt_cols <- grep("^p_lrt_", names(pvals), value = TRUE)
-trait_names <- sub("^p_lrt_", "", p_lrt_cols)
+pval_cols  <- grep(paste0("^", pval_prefix, "_"), names(pvals), value = TRUE)
+trait_names <- sub(paste0("^", pval_prefix, "_"), "", pval_cols)
 
-# ── Collect SuSiE credible set lead SNPs ──────────────────────────────────────
-# A lead SNP qualifies if it produced at least one SNP with cs != NA.
-susie_all <- rbindlist(lapply(args$susie, fread), fill = TRUE)
-
-# Lead SNPs with at least one credible set member
-cs_leads <- susie_all[!is.na(cs), .(chr = chr[1], bp = bp[1]), by = lead_snp]
-
-if (nrow(cs_leads) == 0)
-    stop("No SuSiE credible sets found in the provided locus files.")
-
-message(sprintf("%d loci with credible sets across all traits", nrow(cs_leads)))
+# ── Define loci: SuSiE credible sets OR PLINK clump lead SNPs ─────────────────
+if (args$no_susie) {
+    # Clump mode: aggregate all per-trait lead SNPs from --clump_dir
+    clump_dir   <- if (!is.null(args$clump_dir)) args$clump_dir else "."
+    clump_paths <- list.files(clump_dir,
+                              pattern = "trait[0-9]+\\.clumped$", full.names = TRUE)
+    all_clumped <- rbindlist(lapply(clump_paths, read_clumped), fill = TRUE)
+    if (nrow(all_clumped) == 0)
+        stop("--no_susie: no PLINK clump lead SNPs found in --clump_dir. Cannot build pleiotropy matrix.")
+    cs_leads <- unique(all_clumped[!is.na(SNP),
+                                   .(chr = as.character(CHR), bp = BP),
+                                   by = .(lead_snp = SNP)])
+    message(sprintf("%d loci from PLINK clumping across all traits", nrow(cs_leads)))
+} else {
+    # SuSiE mode: a lead SNP qualifies if it produced at least one SNP with cs != NA.
+    susie_all <- rbindlist(lapply(args$susie, fread), fill = TRUE)
+    cs_leads  <- susie_all[!is.na(cs), .(chr = chr[1], bp = bp[1]), by = lead_snp]
+    if (nrow(cs_leads) == 0)
+        stop("No SuSiE credible sets found in the provided locus files.")
+    message(sprintf("%d loci with credible sets across all traits", nrow(cs_leads)))
+}
 
 # ── Build pleiotropy matrix (loci x traits, -log10 p_lrt) ─────────────────────
 # Filter p-value matrix to lead SNPs present in gwas_pvals
 pvals_leads <- pvals[rs %in% cs_leads$lead_snp,
-                     c("rs", p_lrt_cols), with = FALSE]
+                     c("rs", pval_cols), with = FALSE]
 
 # Some lead SNPs may be absent from gwas_pvals (e.g. multi-allelic or filtered)
 missing <- setdiff(cs_leads$lead_snp, pvals_leads$rs)
@@ -127,8 +154,9 @@ if (length(missing) > 0)
     message(sprintf("  %d lead SNP(s) not found in gwas_pvals and will be dropped: %s",
                     length(missing), paste(missing, collapse = ", ")))
 
-pmat <- as.matrix(pvals_leads[, p_lrt_cols, with = FALSE])
+pmat <- as.matrix(pvals_leads[, pval_cols, with = FALSE])
 rownames(pmat) <- pvals_leads$rs
+colnames(pmat) <- trait_names
 
 # Transform to -log10; replace NA/Inf with 0 (no evidence)
 pmat <- -log10(pmat)
@@ -231,6 +259,7 @@ make_cluster_manhattan <- function(dat, title) {
     dat[, point_col := ifelse(chr_int %% 2L == 0L, CHROM_COLORS[2], CHROM_COLORS[1])]
     dat[!is.na(cluster), point_col := ccols[as.integer(cluster)]]
     dat[, point_size := ifelse(!is.na(cluster), 1.8, 0.6)]
+    dat <- dat[order(is.na(cluster))]   # background (NA) first, cluster leads last → on top
 
     ggplot(dat, aes(x = ps_cum, y = -log10(p))) +
         geom_point(color = dat$point_col, size = dat$point_size, alpha = 0.85) +
@@ -247,14 +276,14 @@ make_cluster_manhattan <- function(dat, title) {
 }
 
 # Per-trait cluster-colored Manhattans
-message("Plotting ", length(p_lrt_cols), " cluster-colored individual Manhattan plots...")
+message("Plotting ", length(pval_cols), " cluster-colored individual Manhattan plots...")
 
-for (i in seq_along(p_lrt_cols)) {
+for (i in seq_along(pval_cols)) {
     trait     <- trait_names[i]
     papername <- pnames[trait, "PaperName"]
     if (is.na(papername)) next
 
-    dat <- pvals[, .(rs, chr_int, ps_cum, p = get(p_lrt_cols[i]), cluster)]
+    dat <- pvals[, .(rs, chr_int, ps_cum, p = get(pval_cols[i]), cluster)]
     plt <- make_cluster_manhattan(dat, title = papername)
     save_plot(plt,
               path = file.path(args$outdir,
@@ -269,7 +298,7 @@ message("Plotting ", length(all_groups), " cluster-colored group Manhattan plots
 
 for (grp in all_groups) {
     grp_traits <- rownames(pnames)[pnames$Group == grp]
-    grp_cols   <- intersect(paste0("p_lrt_", grp_traits), names(pvals))
+    grp_cols   <- intersect(paste0(pval_prefix, "_", grp_traits), names(pvals))
     if (length(grp_cols) == 0) next
 
     grp_mat  <- as.matrix(pvals[, grp_cols, with = FALSE])
@@ -304,13 +333,7 @@ pthresh_p <- 10^(-args$pvalthr)   # convert -log10 threshold back to p-value
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
-# Read a PLINK .clumped file; returns 0-row data.table if absent/empty/no SNPs
-read_clumped <- function(path) {
-    if (!file.exists(path) || file.info(path)$size == 0L) return(data.table())
-    dt <- fread(path, fill = TRUE)
-    if (nrow(dt) == 0L || !"SNP" %in% names(dt)) return(data.table())
-    dt[, .(SNP, CHR, BP, P)]
-}
+# read_clumped is defined near the top of the script, after pval_prefix.
 
 # Trait metadata: one row per trait in YAML order.
 # group_rank preserves cfg$groups_order for consistent sort across all charts.
@@ -338,7 +361,8 @@ bar_qtl <- function(dt, title) {
         theme(legend.position = "none")
 }
 
-# ── Part B: Group-level significance at SuSiE lead SNPs ──────────────────────
+# ── Part B: Group-level significance at lead SNPs (SuSiE mode only) ──────────
+if (!args$no_susie) {
 # pvals already has chr_int, ps_cum, and cluster columns from the Manhattan section.
 leads_pv <- pvals[rs %in% rownames(pmat_ord)]
 
@@ -349,7 +373,7 @@ sig_mat <- matrix(FALSE,
 
 for (grp in all_groups) {
     grp_traits <- rownames(pnames)[pnames$Group == grp]
-    grp_cols   <- intersect(paste0("p_lrt_", grp_traits), names(leads_pv))
+    grp_cols   <- intersect(paste0(pval_prefix, "_", grp_traits), names(leads_pv))
     if (length(grp_cols) == 0) next
     grp_mat  <- as.matrix(leads_pv[, grp_cols, with = FALSE])
     min_pval <- apply(grp_mat, 1L, min, na.rm = TRUE)
@@ -389,7 +413,10 @@ save_plot(hist_plt,
           height = FIG$panel_height)
 message("Written: pleiotropy_hist_", args$name, ".pdf")
 
-# ── Part C: Per-trait SuSiE credible-set locus counts (always) ───────────────
+} # end if (!args$no_susie) — Part B
+
+# ── Part C: Per-trait SuSiE credible-set locus counts (SuSiE mode only) ──────
+if (!args$no_susie) {
 # Count unique lead SNPs with at least one credible set per trait.
 # Traits with zero credible sets (no loci fine-mapped) are included as 0.
 trait_susie <- merge(
@@ -420,6 +447,8 @@ out_susie_grp <- file.path(args$outdir,
 save_plot(bar_qtl(grp_susie, "QTL counts by group (SuSiE credible sets)"),
           path = out_susie_grp, width = FIG$half_width * 1.5, height = pvh_grp_s)
 message("Written: ", out_susie_grp)
+
+} # end if (!args$no_susie) — Part C
 
 # ── Part A: Per-group QTL counts from CLUMP_COMBINED (optional) ──────────────
 if (!is.null(args$clumped_dir)) {
@@ -487,7 +516,8 @@ save_upset <- function(upset_obj, path, width = FIG$full_width,
     dev.off()
 }
 
-# ── Part E1: SuSiE-based overlap ──────────────────────────────────────────────
+# ── Part E1: SuSiE-based overlap (SuSiE mode only) ────────────────────────────
+if (!args$no_susie) {
 # Build one set per group from plei_tbl (computed in Part B).
 susie_sets <- Filter(length, setNames(
     lapply(all_groups, function(g)
@@ -530,6 +560,8 @@ if (length(susie_sets) >= 2) {
 } else {
     message("Fewer than 2 groups with SuSiE QTLs — skipping E1 overlap plots")
 }
+
+} # end if (!args$no_susie) — Part E1
 
 # ── Part E2: CLUMP proximity-based overlap (optional) ─────────────────────────
 if (!is.null(args$clumped_dir)) {

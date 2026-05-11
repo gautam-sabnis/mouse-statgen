@@ -8,6 +8,7 @@ process GET_GENES {
 
     input:
     path input_files   // either all SuSiE locus files or all clump files
+    val  mode          // "susie" or "clump" — resolved by main.nf, not taken from params directly
 
     output:
     path "gene_annotations.csv", emit: annotations
@@ -15,7 +16,7 @@ process GET_GENES {
     script:
     """
     Rscript ${projectDir}/src/get_genes.R \\
-        --mode    ${params.annot_input} \\
+        --mode    ${mode} \\
         --input   ${input_files} \\
         --dist    ${params.locus_window} \\
         --outdir  .

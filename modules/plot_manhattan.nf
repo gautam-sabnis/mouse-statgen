@@ -12,6 +12,7 @@ process PLOT_MANHATTAN {
     path yaml
     path threshold   // single-value file from CALC_PERM_THRESHOLD; pass 'NO_FILE' to use fallback
     val  pval_thresh // fallback threshold from params (used when threshold file is absent)
+    val  pval_type   // which p-value to plot: p_lrt, p_score, or p_wald
     path script      // plot_manhattan.R — declared so cache is invalidated on script changes
     path aesthetics  // aesthetics.R — staged alongside script so dirname() lookup works
     path setup       // postprocess_setup.R — staged alongside script
@@ -29,11 +30,12 @@ process PLOT_MANHATTAN {
         : ""
     """
     Rscript ${script} \\
-        --pvals   ${pvals}  \\
-        --yaml    ${yaml}   \\
-        --name    ${name}   \\
-        --outdir  .         \\
-        ${thresh_arg}       \\
+        --pvals     ${pvals}     \\
+        --yaml      ${yaml}      \\
+        --name      ${name}      \\
+        --outdir    .            \\
+        --pval_type ${pval_type} \\
+        ${thresh_arg}            \\
         ${annot_arg}
     """
 }

@@ -11,6 +11,7 @@ process CLUMP_COMBINED {
     path  trait_groups   // trait_groups_<name>.tsv (trait_name\tgroup) from PREPARE_INPUT
     tuple val(name), path(bed), path(bim), path(fam)
     path  threshold      // single-number file from CALC_PERM_THRESHOLD
+    val   pval_type      // which p-value column prefix to clump on: p_lrt, p_score, or p_wald
 
     output:
     path "*.clumped", emit: clumped   // all.clumped + one per group
@@ -19,11 +20,11 @@ process CLUMP_COMBINED {
     """
     pthresh=\$(cat ${threshold})
 
-    # ── All-traits combined: row-wise min over every p_lrt_* column ──────────
+    # ── All-traits combined: row-wise min over every ${pval_type}_* column ───
     awk 'NR==1 {
              for (i=1; i<=NF; i++) {
-                 if (\$i == "rs")        rs_col = i
-                 if (\$i ~ /^p_lrt_/)   pcols[i] = 1
+                 if (\$i == "rs")               rs_col = i
+                 if (\$i ~ /^${pval_type}_/)   pcols[i] = 1
              }
              print "SNP P"
          }
@@ -43,14 +44,14 @@ process CLUMP_COMBINED {
           --out         all
     [ -f all.clumped ] || touch all.clumped
 
-    # ── Per-group combined: row-wise min over that group's p_lrt_* columns ───
+    # ── Per-group combined: row-wise min over that group's ${pval_type}_* columns ──
     # Skip TSV header; each remaining line is "<trait_name>\t<group>"
     tail -n +2 ${trait_groups} | cut -f2 | sort -u | while IFS= read -r grp; do
 
         # Filesystem-safe stem: replace non-alphanumeric runs with '_', trim trailing '_'
         safe=\$(printf '%s' "\$grp" | tr -cs 'A-Za-z0-9' '_' | sed 's/_\$//')
 
-        # Build PLINK input: SNP + min p_lrt across traits belonging to this group
+        # Build PLINK input: SNP + min ${pval_type} across traits belonging to this group
         awk -v grp="\$grp" -v tsvfile="${trait_groups}" '
             BEGIN {
                 while ((getline line < tsvfile) > 0) {
@@ -62,7 +63,7 @@ process CLUMP_COMBINED {
                 for (i=1; i<=NF; i++) {
                     if (\$i == "rs") rs_col = i
                     col = \$i
-                    sub(/^p_lrt_/, "", col)
+                    sub(/^${pval_type}_/, "", col)
                     if (col in traits) pcols[i] = 1
                 }
                 print "SNP P"

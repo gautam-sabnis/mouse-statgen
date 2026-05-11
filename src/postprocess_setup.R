@@ -95,7 +95,7 @@ load_phenotype_config <- function(yaml_file,
 #   pnames       -- data.frame from load_phenotype_config()$pnames
 #   groups_order -- character vector from load_phenotype_config()$groups_order
 #   palette      -- ggsci palette name passed to group_colors()
-#                   ("nejm", "npg", "bmj", "jco", "lancet", "jama")
+#                   ("uchicago", "nejm", "npg", "bmj", "jco", "lancet", "jama")
 #   meanvariance -- logical; pair variance groups with their mean group color
 #
 # Returns a list:
@@ -103,7 +103,7 @@ load_phenotype_config <- function(yaml_file,
 #   $grpcol  -- named character vector (group name -> hex color)
 assign_group_colors <- function(pnames,
                                 groups_order,
-                                palette      = "nejm",
+                                palette      = "uchicago",
                                 meanvariance = FALSE) {
     if (meanvariance) {
         mean_groups <- groups_order[!grepl("Variance", groups_order)]

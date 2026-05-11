@@ -8,3 +8,9 @@ src/manhattan_gg.R
 src/manhattan_local.R
 src/postprocess_mv.R
 src/postprocess_pg.R
+mousegwas/
+output_grooming/
+output_sap/
+plots/
+postprocess_nomv/
+.Rprofile

@@ -86,18 +86,20 @@ parser$add_argument("--yaml",       "-y", required = TRUE,
     help = "YAML config: strain, phenotypes, covariates, F1 mappings, etc.")
 parser$add_argument("--name",       "-n", required = TRUE,
     help = "Run name — used as prefix for all output files")
-parser$add_argument("--genotypes",  "-g", required = TRUE,
-    help = "HMDP genotype CSV (e.g. muster_hmdp.csv.gz)")
+parser$add_argument("--genotypes",  "-g", required = TRUE, nargs = "+",
+    help = "Genotype file(s): single HMDP CSV (muster_hmdp.csv.gz) or multiple MDA chip CSVs when --MDA is set")
 parser$add_argument("--outdir",     "-o", default = ".",
     help = "Output directory (created if absent, default: .)")
-parser$add_argument("--downsample", "-d", default = 100000L, type = "integer",
-    help = "Max individuals per strain; 0 = average within strain (default: 100000)")
+parser$add_argument("--downsample", "-d", default = 10, type = "integer",
+    help = "Max individuals per strain; 0 = average within strain (default: 10)")
 parser$add_argument("--MAF",     default = 0.1,  type = "double",
     help = "Min minor allele frequency (default: 0.1)")
 parser$add_argument("--missing", default = 0.05, type = "double",
     help = "Max fraction of missing genotype calls per SNP (default: 0.05)")
 parser$add_argument("--qqnorm",  default = FALSE, action = "store_true",
     help = "QQ-normalise each phenotype before output")
+parser$add_argument("--MDA",     default = FALSE, action = "store_true",
+    help = "Use MDA chip files (multiple --genotypes CSVs) instead of the single HMDP Muster file")
 parser$add_argument("--shuffle", default = FALSE, action = "store_true",
     help = "Permute phenotype labels (for null-distribution runs)")
 parser$add_argument("--seed",    default = 100L, type = "integer",
@@ -112,6 +114,7 @@ name <- args$name
 # ── Load YAML and phenotype table ─────────────────────────────────────────────
 yamin          <- yaml.load_file(args$yaml)
 complete_table <- read_csv(args$input, col_types = cols(), show_col_types = FALSE)
+conf_snp_ids   <- unlist(yamin$confSNPs)
 
 # ── Dataset-specific filters ──────────────────────────────────────────────────
 # NOTE: these filters are specific to the anxfb coat-colour analysis.
@@ -163,26 +166,55 @@ strains <- strains |>
 valid_strains <- unique(c(strains$p1, strains$p2))
 
 # ── Load and recode genotypes ─────────────────────────────────────────────────
-message("Loading genotypes from: ", args$genotypes)
-all_geno_cols <- names(fread(args$genotypes, nrows = 0L))
-sel_cols      <- unique(c("chr", "bp38", "rs", "observed", intersect(all_geno_cols, valid_strains)))
-geno <- fread(args$genotypes, select = sel_cols)
-geno[, c("major", "minor") := tstrsplit(observed, "/", fixed = TRUE, keep = 1:2)]
-geno[, observed := NULL]
-geno <- geno[rs != ""]
-
-keep_cols   <- c(intersect(names(geno), valid_strains), "chr", "bp38", "rs", "major", "minor")
-complete.geno <- geno[, ..keep_cols]
-complete.geno[, chr := as.character(chr)]
-
-for (cn in setdiff(names(complete.geno), c("chr", "bp38", "rs", "major", "minor"))) {
-    complete.geno[get(cn) == "H",   (cn) := 1]
-    complete.geno[get(cn) == major, (cn) := 0]
-    complete.geno[get(cn) == minor, (cn) := 2]
-    complete.geno[, (cn) := as.numeric(get(cn))]
+if (args$MDA) {
+    # MDA: merge multiple chip files, each covering a different subset of strains
+    message("Loading MDA genotypes from ", length(args$genotypes), " chip file(s)")
+    complete.geno   <- NULL
+    remaining_strains <- valid_strains
+    for (f in args$genotypes) {
+        message("  Reading: ", f)
+        geno <- fread(f)
+        geno[, c("major", "minor") := tstrsplit(observed, "/", fixed = TRUE, keep = 1:2)]
+        geno <- geno[rs != ""]
+        addnames <- c(intersect(names(geno), remaining_strains), "chr", "bp38", "rs", "major", "minor")
+        geno     <- geno[, ..addnames]
+        if (is.null(complete.geno)) {
+            complete.geno <- geno
+        } else {
+            complete.geno <- merge(complete.geno, geno, all = TRUE,
+                                   by = c("chr", "bp38", "rs", "major", "minor"))
+        }
+        remaining_strains <- setdiff(remaining_strains, names(complete.geno))
+    }
+    complete.geno[, chr := as.character(chr)]
+    for (cn in setdiff(names(complete.geno), c("chr", "bp38", "rs", "major", "minor"))) {
+        complete.geno[get(cn) == "H",   (cn) := 1]
+        complete.geno[get(cn) == major, (cn) := 0]
+        complete.geno[get(cn) == minor, (cn) := 2]
+        complete.geno[, (cn) := as.numeric(get(cn))]
+    }
+} else {
+    # HMDP Muster: single file
+    message("Loading HMDP genotypes from: ", args$genotypes[1])
+    all_geno_cols <- names(fread(args$genotypes[1], nrows = 0L))
+    sel_cols      <- unique(c("chr", "bp38", "rs", "observed", intersect(all_geno_cols, valid_strains)))
+    geno <- fread(args$genotypes[1], select = sel_cols)
+    geno[, c("major", "minor") := tstrsplit(observed, "/", fixed = TRUE, keep = 1:2)]
+    geno[, observed := NULL]
+    geno <- geno[rs != ""]
+    keep_cols     <- c(intersect(names(geno), valid_strains), "chr", "bp38", "rs", "major", "minor")
+    complete.geno <- geno[, ..keep_cols]
+    complete.geno[, chr := as.character(chr)]
+    for (cn in setdiff(names(complete.geno), c("chr", "bp38", "rs", "major", "minor"))) {
+        complete.geno[get(cn) == "H",   (cn) := 1]
+        complete.geno[get(cn) == major, (cn) := 0]
+        complete.geno[get(cn) == minor, (cn) := 2]
+        complete.geno[, (cn) := as.numeric(get(cn))]
+    }
 }
 
-srdata <- complete.geno[, .(rs, major, minor)]
+srdata   <- complete.geno[, .(rs, major, minor)]
+conf_geno <- if (length(conf_snp_ids) > 0) complete.geno[rs %in% conf_snp_ids] else data.table()
 
 # ── Build per-individual genotype, phenotype, and covariate tables ────────────
 strains_genomes <- srdata
@@ -218,17 +250,30 @@ for (comrow in seq_len(nrow(complete_table))) {
     strains_genomes[, paste0("X", comrow) :=
         (complete.geno[[p1n]] + complete.geno[[p2n]]) / 2]
 
-    # X chromosome in F1 males: take only the maternal haplotype
-    if (p1n != p2n && !is.null(yamin$sex) && complete_table[[comrow, yamin$sex]] == "M")
+    # X chromosome: use direct allele value (0/2 scale) rather than averaged (0/1 scale)
+    # so PLINK BED gets correct diploid encoding and GEMMA doesn't treat hom-minor as het.
+    # — inbred strains (p1==p2): take either allele directly (gives 0 or 2)
+    # — F1 males (hemizygous): take maternal (p1) allele only (gives 0 or 2)
+    if (p1n == p2n ||
+        (!is.null(yamin$sex) && complete_table[[comrow, yamin$sex]] == "M"))
         strains_genomes[complete.geno$chr == "X", paste0("X", comrow) :=
             complete.geno[[p1n]][complete.geno$chr == "X"]]
 
-    prow <- complete_table[comrow, c("Strain", "MouseID", pheno_names)]
-    #crow <- cbind(
-    #    complete_table[comrow, covar_names, drop = FALSE],
-    #    tibble(isWild = as.numeric(p1n %in% yamin$wild | p2n %in% yamin$wild))
-    #)
-    crow <- complete_table[comrow, covar_names, drop = FALSE]
+    prow <- complete_table[comrow, ] |> select(any_of(c("Strain", "MouseID", pheno_names)))
+    conf_vals <- if (nrow(conf_geno) > 0)
+        setNames(
+            lapply(conf_snp_ids, function(snp) {
+                r <- conf_geno[rs == snp]
+                if (nrow(r) == 0) NA_real_ else (r[[p1n]] + r[[p2n]]) / 2
+            }),
+            conf_snp_ids
+        )
+    else list()
+    crow <- cbind(
+        complete_table[comrow, covar_names, drop = FALSE],
+        tibble(isWild = as.numeric(p1n %in% yamin$wild | p2n %in% yamin$wild)),
+        as.data.frame(conf_vals)
+    )
 
     if (length(covar_names) == 0 || all(!is.na(crow))) {
         phenos <- rbind(phenos, prow, fill = TRUE)
@@ -239,10 +284,16 @@ for (comrow in seq_len(nrow(complete_table))) {
 }
 
 # ── Build covariate model matrix ──────────────────────────────────────────────
-if (length(covar_names) > 0) {
+extra_covar_names <- c(
+    if (!is.null(yamin$wild)) "isWild" else character(0),
+    conf_snp_ids
+)
+all_covar_names <- c(covar_names, extra_covar_names)
+
+if (length(all_covar_names) > 0) {
     covars <- model.matrix(
-        as.formula(paste0("~", paste(covar_names, collapse = "+"))),
-        data = covars
+        as.formula(paste0("~", paste(all_covar_names, collapse = "+"))),
+        data = as.data.frame(covars)
     )
 } else {
     covars <- NULL
@@ -386,7 +437,8 @@ bim$alt  <- ifelse(is.na(b$genotypes$major) | b$genotypes$major == "", "0", b$ge
 fam        <- make_fam(n = n)
 fam$fam    <- plink_pheno$FID
 fam$id     <- plink_pheno$IID
-fam$sex    <- ifelse(complete_table$Sex[b$indices] == "M", 1L, 2L)
+fam$sex    <- if (!is.null(yamin$sex))
+    ifelse(complete_table[[yamin$sex]][b$indices] == "M", 1L, 2L) else 0L
 fam$pheno  <- -9L
 
 # Drop sex chromosomes (avoids hemizygosity warnings in PLINK/GEMMA)

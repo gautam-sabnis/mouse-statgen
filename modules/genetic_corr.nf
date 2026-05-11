@@ -1,6 +1,7 @@
 process GENETIC_CORR {
     tag "rg_${i}_${j}"
     label 'low'
+    errorStrategy 'ignore'
 
     publishDir "${params.outdir}/genetic_corr/pairs", mode: 'copy'
 

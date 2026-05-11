@@ -25,6 +25,8 @@ process SUSIE_FINEMAP {
         --clump     ${clumped} \\
         --threshold ${threshold} \\
         --window    ${params.locus_window} \\
+        --loddrop   ${params.loddrop}      \\
+        --pval_type ${params.pval_type}    \\
         --L         ${params.susie_L} \\
         --outdir    .
     """

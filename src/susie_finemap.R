@@ -22,7 +22,11 @@ parser$add_argument("--gwas",      required = TRUE,  help = "GEMMA LOCO .assoc.t
 parser$add_argument("--clump",     required = TRUE,  help = "PLINK .clumped file for this trait")
 parser$add_argument("--threshold", required = TRUE,  help = "File containing significance threshold (single value)")
 parser$add_argument("--window",    default  = 1e6,   type = "double",
-                    help = "Half-window size in bp around each lead SNP (default 1Mb)")
+                    help = "Max half-window size in bp (cap for LOD-drop, or fixed window when --loddrop 0; default 1Mb)")
+parser$add_argument("--loddrop",   default  = 1.5,   type = "double",
+                    help = "LOD-drop threshold for interval expansion: extend from peak until -log10(p) drops by this much (0 = use fixed --window; default 1.5)")
+parser$add_argument("--pval_type", default  = "p_wald",
+                    help = "P-value column to use for LOD-drop (default: p_wald)")
 parser$add_argument("--L",         default  = 10,    type = "integer",
                     help = "Max number of causal signals per locus (default 10)")
 parser$add_argument("--outdir",    default  = ".")
@@ -56,7 +60,9 @@ y <- as.numeric(pheno_mat[, args$trait])
 
 # ── Load GWAS results ─────────────────────────────────────────────────────────
 gwas <- fread(args$gwas)
-if (!"p_lrt" %in% names(gwas)) stop("p_lrt column not found in GWAS file.")
+if (!args$pval_type %in% names(gwas))
+    stop(sprintf("Column '%s' not found in GWAS file.", args$pval_type))
+gwas[, logp := -log10(get(args$pval_type))]
 
 dir.create(args$outdir, showWarnings = FALSE, recursive = TRUE)
 
@@ -65,8 +71,29 @@ for (i in seq_len(nrow(clump))) {
     lead_snp <- clump$SNP[i]
     lead_chr <- clump$CHR[i]
     lead_bp  <- clump$BP[i]
-    win_start <- max(1, lead_bp - args$window)
-    win_end   <- lead_bp + args$window
+
+    if (args$loddrop > 0) {
+        gwas_chr  <- gwas[as.character(chr) == as.character(lead_chr)]
+        peak_logp <- gwas_chr[ps == lead_bp, logp]
+        if (length(peak_logp) == 0) peak_logp <- -log10(clump$P[i])
+        lodstop   <- peak_logp - args$loddrop
+        win_start <- max(1L, max(c(lead_bp - args$window,
+                                   gwas_chr[ps < lead_bp & logp < lodstop, ps])))
+        win_end   <-         min(c(lead_bp + args$window,
+                                   gwas_chr[ps > lead_bp & logp < lodstop, ps]))
+    } else {
+        # loddrop=0: span of all clumped SNPs capped at ±window (matches mousegwas behavior)
+        sp2_raw  <- clump$SP2[i]
+        sp2_snps <- if (is.na(sp2_raw) || trimws(sp2_raw) %in% c("NONE", "")) {
+            character(0)
+        } else {
+            trimws(sub("\\([^)]+\\)", "", strsplit(sp2_raw, ",")[[1]]))
+        }
+        clump_bps <- bim$bp[bim$snp %in% c(lead_snp, sp2_snps)]
+        if (length(clump_bps) == 0) clump_bps <- lead_bp
+        win_start <- max(1L, max(min(clump_bps), lead_bp - args$window))
+        win_end   <-         min(max(clump_bps), lead_bp + args$window)
+    }
 
     snp_idx <- which(bim$chr == lead_chr &
                      bim$bp  >= win_start &
@@ -77,8 +104,9 @@ for (i in seq_len(nrow(clump))) {
         next
     }
 
-    cat(sprintf("  Locus %s | chr%s:%d-%d | %d SNPs\n",
-                lead_snp, lead_chr, win_start, win_end, length(snp_idx)))
+    interval_type <- if (args$loddrop > 0) sprintf("LOD-drop %.1f", args$loddrop) else "fixed window"
+    cat(sprintf("  Locus %s | chr%s:%d-%d | %d SNPs [%s]\n",
+                lead_snp, lead_chr, win_start, win_end, length(snp_idx), interval_type))
 
     # Load, impute missing with column mean, and standardise
     X <- as.matrix(bed[, snp_idx])

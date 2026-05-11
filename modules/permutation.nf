@@ -10,6 +10,7 @@ process PERMUTATION {
     path covars
     path kinship
     val  trait_idx
+    val  pval_type   // which p-value column for threshold: p_lrt, p_score, or p_wald
 
     output:
     path "minp_${perm_idx}.txt", emit: minp
@@ -35,8 +36,8 @@ process PERMUTATION {
           -lmin 0.01 -lmax 100 \\
           -o perm${perm_idx}
 
-    # Extract genome-wide minimum p_lrt from this permutation
-    awk 'NR==1 {for(i=1;i<=NF;i++) if(\$i=="p_lrt") col=i}
+    # Extract genome-wide minimum ${pval_type} from this permutation
+    awk 'NR==1 {for(i=1;i<=NF;i++) if(\$i=="${pval_type}") col=i}
          NR>1  {if(\$col < min || NR==2) min=\$col}
          END   {print min}' output/perm${perm_idx}.assoc.txt \\
         > minp_${perm_idx}.txt

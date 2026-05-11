@@ -8,12 +8,12 @@
 # Input:
 #   gwas_pvals_<name>.csv  -- space-separated; columns:
 #                             chr rs ps allele1 allele0
-#                             p_lrt_<trait1> p_score_<trait1>
-#                             p_lrt_<trait2> p_score_<trait2> ...
+#                             p_lrt_<trait1> p_score_<trait1> p_wald_<trait1>
+#                             p_lrt_<trait2> p_score_<trait2> p_wald_<trait2> ...
+#                             (column prefix selected via --pval_type; default: p_wald)
 #
 # Significance tiers (two optional thresholds):
-#   sig_strict  -- p below the stricter threshold  → SIG_STRICT_COLOR
-#   sig_lenient -- p below only the lenient threshold → SIG_LENIENT_COLOR
+#   sig_strict  -- p below the significance threshold → SIG_STRICT_COLOR
 #   background  -- alternating grey by chromosome
 #
 # Outputs (one PDF per trait, one per group):
@@ -52,9 +52,10 @@ if (LOCAL) {
         outdir         = "output/plots/manhattan",
         threshold_file = NULL,    # path to permutation threshold file, or NULL
         threshold      = 5e-8,    # fallback genome-wide threshold
-        palette        = "nejm",
+        palette        = "uchicago",
         annot_file     = "output/annotations/gene_annotations.csv",    # set to "output/annotations/gene_annotations.csv" to enable labels
-        label_gap      = 1000     # minimum kb between labeled loci
+        label_gap      = 1000,    # minimum kb between labeled loci
+        pval_type      = "p_wald" # which p-value column to plot: p_lrt, p_score, p_wald
     )
 } else {
     parser <- ArgumentParser()
@@ -70,17 +71,22 @@ if (LOCAL) {
         help = "Single-value file with permutation p-value threshold (from CALC_PERM_THRESHOLD)")
     parser$add_argument("--threshold", type = "double", default = 5e-8,
         help = "Fallback genome-wide significance threshold (default: 5e-8); used when --threshold_file is absent")
-    parser$add_argument("--palette", default = "nejm",
-        choices = c("nejm", "npg", "bmj", "jco", "lancet", "jama"),
-        help = "ggsci palette for group colors in the combined plot legend (default: nejm)")
+    parser$add_argument("--palette", default = "uchicago",
+        choices = c("uchicago", "nejm", "npg", "bmj", "jco", "lancet", "jama"),
+        help = "ggsci palette for group colors in the combined plot legend (default: uchicago)")
     parser$add_argument("--annot_file",
         help = "gene_annotations.csv from GET_GENES; enables MGI symbol labels on sig SNPs (single-trait plots only)")
     parser$add_argument("--label_gap", type = "double", default = 1000,
         help = "Min distance in kb between labeled loci (default: 1000)")
+    parser$add_argument("--pval_type", default = "p_wald",
+        choices = c("p_lrt", "p_score", "p_wald"),
+        help = "Which p-value column to use for Manhattan plots (default: p_wald)")
     args <- parser$parse_args()
 }
 
 dir.create(args$outdir, recursive = TRUE, showWarnings = FALSE)
+
+pval_prefix <- args$pval_type   # e.g. "p_wald", "p_lrt", or "p_score"
 
 # ── Phenotype metadata ─────────────────────────────────────────────────────────
 cfg              <- load_phenotype_config(args$yaml)
@@ -88,15 +94,15 @@ colors           <- assign_group_colors(cfg$pnames, cfg$groups_order, palette = 
 pnames           <- colors$pnames
 rownames(pnames) <- cfg$pheno_names
 
-# ── Significance thresholds ────────────────────────────────────────────────────
-# perm_thresh: from permutation testing (stricter, solid line)
-# default_thresh: genome-wide fallback (dashed line)
-# Either or both may be NULL/absent.
+# ── Significance threshold ─────────────────────────────────────────────────────
+# Use permutation threshold when available; fall back to params default.
 perm_thresh <- if (!is.null(args$threshold_file) &&
                    file.exists(args$threshold_file))
     suppressWarnings(as.numeric(readLines(args$threshold_file, warn = FALSE)[1])) else NULL
 
 default_thresh <- args$threshold
+
+thresh <- if (!is.null(perm_thresh)) perm_thresh else default_thresh
 
 # ── Gene annotation lookup (optional) ─────────────────────────────────────────
 # Produces gene_labels: data.table(rs, mgi_symbol) — one best gene per SNP.
@@ -135,8 +141,8 @@ pvals <- fread(args$pvals, sep = " ")
 pvals[, chr := ifelse(chr == "X", 23L, suppressWarnings(as.integer(chr)))]
 pvals <- pvals[!is.na(chr)]
 
-p_lrt_cols  <- grep("^p_lrt_",   names(pvals), value = TRUE)
-trait_names <- sub("^p_lrt_", "", p_lrt_cols)
+pval_cols   <- grep(paste0("^", pval_prefix, "_"), names(pvals), value = TRUE)
+trait_names <- sub(paste0("^", pval_prefix, "_"), "", pval_cols)
 
 # ── Cumulative genomic positions ───────────────────────────────────────────────
 chr_offsets <- pvals[, .(chr_len = max(as.numeric(ps))), by = chr][order(chr)]
@@ -156,25 +162,18 @@ axis_df[, label := ifelse(chr == 23L, "X", as.character(chr))]
 make_manhattan <- function(dat, title, add_labels = FALSE) {
     dat <- dat[!is.na(p) & p > 0]
 
-    # Thresholds sorted so thr[1] is the strictest (smallest p)
-    thr <- sort(c(perm_thresh, default_thresh))
-
     dat[, sig_cat := ifelse(chr %% 2L == 0L, "chr_even", "chr_odd")]
-    if (length(thr) >= 2L) dat[p <= thr[2L], sig_cat := "sig_lenient"]
-    if (length(thr) >= 1L) dat[p <= thr[1L], sig_cat := "sig_strict"]
+    if (!is.null(thresh)) dat[p <= thresh, sig_cat := "sig_strict"]
     dat[, sig_cat := factor(sig_cat,
-                            levels = c("chr_odd", "chr_even",
-                                       "sig_lenient", "sig_strict"))]
+                            levels = c("chr_odd", "chr_even", "sig_strict"))]
 
-    color_map <- c(chr_odd     = CHROM_COLORS[1],
-                   chr_even    = CHROM_COLORS[2],
-                   sig_lenient = SIG_LENIENT_COLOR,
-                   sig_strict  = SIG_STRICT_COLOR)
+    color_map <- c(chr_odd    = CHROM_COLORS[1],
+                   chr_even   = CHROM_COLORS[2],
+                   sig_strict = SIG_STRICT_COLOR)
 
-    size_map  <- c(chr_odd     = 0.6,
-                   chr_even    = 0.6,
-                   sig_lenient = 1.5,
-                   sig_strict  = 1.5)
+    size_map  <- c(chr_odd    = 0.6,
+                   chr_even   = 0.6,
+                   sig_strict = 1.5)
 
     plt <- ggplot(dat, aes(x = ps_cum, y = -log10(p),
                            color = sig_cat, size = sig_cat)) +
@@ -190,20 +189,16 @@ make_manhattan <- function(dat, title, add_labels = FALSE) {
              title = title) +
         theme_manhattan()
 
-    if (!is.null(perm_thresh))
-        plt <- plt + geom_hline(yintercept = -log10(perm_thresh),
+    if (!is.null(thresh))
+        plt <- plt + geom_hline(yintercept = -log10(thresh),
                                 color = "black", linetype = "solid",
-                                linewidth = 0.5)
-    if (!is.null(default_thresh))
-        plt <- plt + geom_hline(yintercept = -log10(default_thresh),
-                                color = "black", linetype = "dashed",
                                 linewidth = 0.5)
 
     # ── Gene labels on significant peaks ──────────────────────────────────────
-    if (add_labels && !is.null(gene_labels) && length(thr) >= 1L) {
+    if (add_labels && !is.null(gene_labels) && !is.null(thresh)) {
 
         # Significant SNPs that have a gene annotation
-        sig_dat <- merge(dat[p <= thr[1L] & sig_cat == "sig_strict"],
+        sig_dat <- merge(dat[p <= thresh & sig_cat == "sig_strict"],
                          gene_labels, by = "rs", all.x = FALSE)
 
         if (nrow(sig_dat) > 0L) {
@@ -246,13 +241,13 @@ make_manhattan <- function(dat, title, add_labels = FALSE) {
 }
 
 # ── Winner-colored group Manhattan (significant SNPs colored by winning trait) ──
-# dat_full   : data.table with rs, chr, ps_cum + p_lrt_<trait> columns for group
+# dat_full   : data.table with rs, chr, ps_cum + <pval_prefix>_<trait> columns for group
 # grp_traits : character vector of pheno_names keys (row names in pnames)
 # title      : plot title string
 make_manhattan_winner <- function(dat_full, grp_traits, title) {
-    trait_cols        <- intersect(paste0("p_lrt_", grp_traits), names(dat_full))
+    trait_cols        <- intersect(paste0(pval_prefix, "_", grp_traits), names(dat_full))
     if (length(trait_cols) == 0L) return(invisible(NULL))
-    grp_traits_active <- sub("^p_lrt_", "", trait_cols)
+    grp_traits_active <- sub(paste0("^", pval_prefix, "_"), "", trait_cols)
 
     paper_names <- pnames[grp_traits_active, "PaperName"]
     names(paper_names) <- grp_traits_active
@@ -264,14 +259,11 @@ make_manhattan_winner <- function(dat_full, grp_traits, title) {
                          if (all(is.na(x))) 1L else which.min(x))
     win_paper   <- paper_names[grp_traits_active[win_col_idx]]
 
-    thr <- sort(c(perm_thresh, default_thresh))
-
     dat <- dat_full[, .(rs, chr, ps_cum)]
     dat[, min_p     := min_p]
     dat[, win_paper := win_paper]
     dat[, sig_cat   := ifelse(chr %% 2L == 0L, "chr_even", "chr_odd")]
-    if (length(thr) >= 2L) dat[min_p <= thr[2L], sig_cat := "sig_lenient"]
-    if (length(thr) >= 1L) dat[min_p <= thr[1L], sig_cat := win_paper]
+    if (!is.null(thresh)) dat[min_p <= thresh, sig_cat := win_paper]
 
     unique_papers <- unique(paper_names)
     active_papers <- intersect(unique_papers, unique(dat$sig_cat))
@@ -280,20 +272,20 @@ make_manhattan_winner <- function(dat_full, grp_traits, title) {
     trait_pal    <- cluster_colors(n_traits, palette = if (n_traits <= 10L) "d3" else "igv")
     trait_colors <- setNames(trait_pal, unique_papers)
 
-    all_levels <- c("chr_odd", "chr_even", "sig_lenient", unique_papers)
+    all_levels <- c("chr_odd", "chr_even", unique_papers)
     dat[, sig_cat := factor(sig_cat, levels = all_levels)]
 
-    color_map <- c(chr_odd     = CHROM_COLORS[1],
-                   chr_even    = CHROM_COLORS[2],
-                   sig_lenient = SIG_LENIENT_COLOR,
+    color_map <- c(chr_odd  = CHROM_COLORS[1],
+                   chr_even = CHROM_COLORS[2],
                    trait_colors)
 
-    size_map <- c(chr_odd     = 0.6,
-                  chr_even    = 0.6,
-                  sig_lenient = 1.5,
+    size_map <- c(chr_odd  = 0.6,
+                  chr_even = 0.6,
                   setNames(rep(1.5, n_traits), unique_papers))
 
-    plt <- ggplot(dat[!is.na(min_p) & min_p > 0],
+    dat_plot <- dat[!is.na(min_p) & min_p > 0]
+    setorder(dat_plot, sig_cat)   # background levels first, trait levels last → on top
+    plt <- ggplot(dat_plot,
                   aes(x = ps_cum, y = -log10(min_p),
                       color = sig_cat, size = sig_cat)) +
         geom_point(alpha = 0.85) +
@@ -319,56 +311,49 @@ make_manhattan_winner <- function(dat_full, grp_traits, title) {
         theme_manhattan() +
         theme(legend.position = if (length(active_papers) > 0L) "right" else "none")
 
-    if (!is.null(perm_thresh))
-        plt <- plt + geom_hline(yintercept = -log10(perm_thresh),
+    if (!is.null(thresh))
+        plt <- plt + geom_hline(yintercept = -log10(thresh),
                                 color = "black", linetype = "solid",
-                                linewidth = 0.5)
-    if (!is.null(default_thresh))
-        plt <- plt + geom_hline(yintercept = -log10(default_thresh),
-                                color = "black", linetype = "dashed",
                                 linewidth = 0.5)
     plt
 }
 
 # ── Combined all-groups Manhattan (significant SNPs colored by winning group) ──
 make_manhattan_combined <- function() {
-    if (length(p_lrt_cols) == 0L) return(invisible(NULL))
+    if (length(pval_cols) == 0L) return(invisible(NULL))
 
     grpcol_map <- colors$grpcol   # named vector: group -> hex color
 
     # Per-SNP minimum p across all traits and the winning group
-    p_mat       <- as.matrix(pvals[, p_lrt_cols, with = FALSE])
+    p_mat       <- as.matrix(pvals[, pval_cols, with = FALSE])
     min_p       <- apply(p_mat, 1L, min, na.rm = TRUE)
     win_col_idx <- apply(p_mat, 1L, function(x)
                          if (all(is.na(x))) 1L else which.min(x))
     win_trait   <- trait_names[win_col_idx]
     win_group   <- pnames[win_trait, "Group"]
 
-    thr <- sort(c(perm_thresh, default_thresh))
-
     dat <- pvals[, .(rs, chr, ps_cum)]
     dat[, min_p     := min_p]
     dat[, win_group := win_group]
     dat[, sig_cat   := ifelse(chr %% 2L == 0L, "chr_even", "chr_odd")]
-    if (length(thr) >= 2L) dat[min_p <= thr[2L], sig_cat := "sig_lenient"]
-    if (length(thr) >= 1L) dat[min_p <= thr[1L], sig_cat := win_group]
+    if (!is.null(thresh)) dat[min_p <= thresh, sig_cat := win_group]
 
     active_groups <- intersect(names(grpcol_map), unique(dat$sig_cat))
 
-    all_levels <- c("chr_odd", "chr_even", "sig_lenient", names(grpcol_map))
+    all_levels <- c("chr_odd", "chr_even", names(grpcol_map))
     dat[, sig_cat := factor(sig_cat, levels = all_levels)]
 
-    color_map <- c(chr_odd     = CHROM_COLORS[1],
-                   chr_even    = CHROM_COLORS[2],
-                   sig_lenient = SIG_LENIENT_COLOR,
+    color_map <- c(chr_odd  = CHROM_COLORS[1],
+                   chr_even = CHROM_COLORS[2],
                    grpcol_map)
 
-    size_map <- c(chr_odd     = 0.6,
-                  chr_even    = 0.6,
-                  sig_lenient = 1.5,
+    size_map <- c(chr_odd  = 0.6,
+                  chr_even = 0.6,
                   setNames(rep(1.5, length(grpcol_map)), names(grpcol_map)))
 
-    plt <- ggplot(dat[!is.na(min_p) & min_p > 0],
+    dat_plot <- dat[!is.na(min_p) & min_p > 0]
+    setorder(dat_plot, sig_cat)   # background levels first, group levels last → on top
+    plt <- ggplot(dat_plot,
                   aes(x = ps_cum, y = -log10(min_p),
                       color = sig_cat, size = sig_cat)) +
         geom_point(alpha = 0.85) +
@@ -394,21 +379,17 @@ make_manhattan_combined <- function() {
         theme_manhattan() +
         theme(legend.position = if (length(active_groups) > 0L) "right" else "none")
 
-    if (!is.null(perm_thresh))
-        plt <- plt + geom_hline(yintercept = -log10(perm_thresh),
+    if (!is.null(thresh))
+        plt <- plt + geom_hline(yintercept = -log10(thresh),
                                 color = "black", linetype = "solid",
-                                linewidth = 0.5)
-    if (!is.null(default_thresh))
-        plt <- plt + geom_hline(yintercept = -log10(default_thresh),
-                                color = "black", linetype = "dashed",
                                 linewidth = 0.5)
     plt
 }
 
 # ── Individual trait Manhattan plots ──────────────────────────────────────────
-message("Plotting ", length(p_lrt_cols), " individual Manhattan plots...")
+message("Plotting ", length(pval_cols), " individual Manhattan plots...")
 
-for (i in seq_along(p_lrt_cols)) {
+for (i in seq_along(pval_cols)) {
     trait     <- trait_names[i]
     papername <- pnames[trait, "PaperName"]
 
@@ -417,7 +398,7 @@ for (i in seq_along(p_lrt_cols)) {
         next
     }
 
-    dat <- pvals[, .(rs, chr, ps_cum, p = get(p_lrt_cols[i]))]
+    dat <- pvals[, .(rs, chr, ps_cum, p = get(pval_cols[i]))]
     plt <- make_manhattan(dat, title = papername, add_labels = !is.null(gene_labels))
 
     save_plot(plt,
@@ -432,10 +413,10 @@ message("Plotting ", length(all_groups), " group Manhattan plots (winner-colored
 
 for (grp in all_groups) {
     grp_traits <- rownames(pnames)[pnames$Group == grp]
-    grp_cols   <- intersect(paste0("p_lrt_", grp_traits), names(pvals))
+    grp_cols   <- intersect(paste0(pval_prefix, "_", grp_traits), names(pvals))
 
     if (length(grp_cols) == 0) {
-        message("  Skipping group '", grp, "' (no matching p_lrt columns)")
+        message("  Skipping group '", grp, "' (no matching ", pval_prefix, " columns)")
         next
     }
 

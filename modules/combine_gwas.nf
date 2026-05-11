@@ -32,8 +32,9 @@ process COMBINE_GWAS {
     a0_col=\$(echo "\$header"   | tr '\\t' '\\n' | grep -n '^allele0\$' | cut -d: -f1)
     beta_col=\$(echo "\$header" | tr '\\t' '\\n' | grep -n '^beta\$'    | cut -d: -f1)
     se_col=\$(echo "\$header"   | tr '\\t' '\\n' | grep -n '^se\$'      | cut -d: -f1)
-    plrt_col=\$(echo "\$header" | tr '\\t' '\\n' | grep -n '^p_lrt\$'   | cut -d: -f1)
-    psco_col=\$(echo "\$header" | tr '\\t' '\\n' | grep -n '^p_score\$' | cut -d: -f1)
+    plrt_col=\$(echo "\$header"  | tr '\\t' '\\n' | grep -n '^p_lrt\$'   | cut -d: -f1)
+    psco_col=\$(echo "\$header"  | tr '\\t' '\\n' | grep -n '^p_score\$' | cut -d: -f1)
+    pwal_col=\$(echo "\$header"  | tr '\\t' '\\n' | grep -n '^p_wald\$'  | cut -d: -f1)
 
     # ── Extract SNP key columns (space-separated); recode chr 23 → X ────────────
     awk -v c="\$chr_col" -v r="\$rs_col" -v p="\$ps_col" \\
@@ -53,13 +54,13 @@ process COMBINE_GWAS {
 
         awk -v b="\$beta_col" -v s="\$se_col" \\
             'NR>1 {OFS=" "; print \$b,\$s}' "\$f" > eff_\${i}.tmp
-        awk -v pl="\$plrt_col" -v ps="\$psco_col" \\
-            'NR>1 {OFS=" "; print \$pl,\$ps}' "\$f" > pval_\${i}.tmp
+        awk -v pl="\$plrt_col" -v ps="\$psco_col" -v pw="\$pwal_col" \\
+            'NR>1 {OFS=" "; print \$pl,\$ps,\$pw}' "\$f" > pval_\${i}.tmp
 
         eff_files+=(eff_\${i}.tmp)
         pval_files+=(pval_\${i}.tmp)
         eff_hdr="\${eff_hdr} beta_\${tname} se_\${tname}"
-        pval_hdr="\${pval_hdr} p_lrt_\${tname} p_score_\${tname}"
+        pval_hdr="\${pval_hdr} p_lrt_\${tname} p_score_\${tname} p_wald_\${tname}"
     done
 
     # ── Write header + pasted data ────────────────────────────────────────────
