@@ -46,13 +46,16 @@ dir.create(args$outdir, recursive = TRUE, showWarnings = FALSE)
 # ── Parse one INRICH output file ─────────────────────────────────────────────
 # INRICH writes lines containing "_O1" for the observed statistics.
 parse_inrich <- function(fname) {
-    con <- pipe(paste0('grep "_O1" ', shQuote(fname)))
-    tbl <- tryCatch(
-        read.table(con, sep = "\t", header = TRUE, quote = ""),
+    lines <- tryCatch(
+        system(paste0('grep "_O1" ', shQuote(fname)), intern = TRUE),
+        error = function(e) character(0)
+    )
+    if (length(lines) < 2) return(NULL)
+    tryCatch(
+        read.table(text = paste(lines, collapse = "\n"), sep = "\t",
+                   header = TRUE, quote = ""),
         error = function(e) NULL
     )
-    try(close(con), silent = TRUE)
-    tbl
 }
 
 # ── Extract label and gene-set from filename ──────────────────────────────────
@@ -84,9 +87,11 @@ for (n in names(yamin$phenotypes)) {
 # Also build a lookup keyed by sanitised internal name (matching our label format)
 pnames$label_key <- gsub("[^A-Za-z0-9]", "_", pnames$internal)
 
-# Group colour palette
-groupsOrder <- if (length(yamin$groups)) c(yamin$groups, "General") else
-               c(unique(pnames$Group), "General")
+# Group colour palette — include Cluster and General as catch-alls
+groupsOrder <- unique(c(
+    if (length(yamin$groups)) yamin$groups else unique(pnames$Group),
+    "Cluster", "General"
+))
 grpcol <- rep(brewer.pal(8, "Accent"), ceiling(length(groupsOrder) / 8))[seq_along(groupsOrder)]
 names(grpcol) <- groupsOrder
 
